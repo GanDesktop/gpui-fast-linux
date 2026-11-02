@@ -1536,6 +1536,30 @@ impl PlatformWindow for X11Window {
         None
     }
 
+    fn set_external_parent(&self, parent: &str) -> anyhow::Result<()> {
+        let handle = parent.strip_prefix("x11:").ok_or_else(|| anyhow::anyhow!("expected an X11 parent identifier"))?;
+        let parent = u32::from_str_radix(handle, 16)?;
+        if parent == 0 { anyhow::bail!("invalid X11 parent window"); }
+        self.0.xcb.get_window_attributes(parent)?.reply()?;
+        let state = self.0.state.borrow();
+        self.0.xcb.change_property32(xproto::PropMode::REPLACE, self.0.x_window, state.atoms.WM_TRANSIENT_FOR, xproto::AtomEnum::WINDOW, &[parent])?.check()?;
+        self.0.xcb.flush()?;
+        Ok(())
+    }
+
+    fn activate_with_token(&self, token: &str) -> anyhow::Result<()> {
+        let atom = self.0.xcb.intern_atom(false, b"_NET_STARTUP_ID")?.reply()?.atom;
+        let utf8 = self.0.xcb.intern_atom(false, b"UTF8_STRING")?.reply()?.atom;
+        self.0.xcb.change_property8(xproto::PropMode::REPLACE, self.0.x_window, atom, utf8, token.as_bytes())?.check()?;
+        let timestamp = token.rsplit_once("_TIME").and_then(|(_, time)| time.parse::<u32>().ok()).unwrap_or(0);
+        let message = xproto::ClientMessageEvent::new(32, self.0.x_window,
+            self.0.state.borrow().atoms._NET_ACTIVE_WINDOW, [1, timestamp, 0, 0, 0]);
+        self.0.xcb.send_event(false, self.0.state.borrow().x_root_window,
+            xproto::EventMask::SUBSTRUCTURE_REDIRECT | xproto::EventMask::SUBSTRUCTURE_NOTIFY, message)?;
+        self.0.xcb.flush()?;
+        Ok(())
+    }
+
     fn activate(&self) {
         let data = [1, xproto::Time::CURRENT_TIME.into(), 0, 0, 0];
         let message = xproto::ClientMessageEvent::new(
