@@ -11,7 +11,12 @@ use wayland_client::{Connection, protocol::wl_data_offer::WlDataOffer};
 use wayland_protocols::wp::primary_selection::zv1::client::zwp_primary_selection_offer_v1::ZwpPrimarySelectionOfferV1;
 
 use crate::linux::platform::{PIPE_READ_TIMEOUT, read_fd_with_timeout};
-use gpui::{ClipboardEntry, ClipboardItem, Image, ImageFormat, hash};
+use gpui::{
+    BackgroundExecutor, ClipboardAccessError, ClipboardEntry, ClipboardItem, ClipboardMime,
+    ClipboardMimeOffer, Image, ImageFormat, Task, hash,
+};
+use std::sync::Arc;
+mod mime;
 
 /// Text mime types that we'll offer to other programs.
 pub(crate) const TEXT_MIME_TYPES: [&str; 3] =
@@ -28,6 +33,9 @@ pub(crate) struct Clipboard {
 
     // Internal clipboard
     contents: Option<ClipboardItem>,
+    mime_contents: Option<Arc<Vec<ClipboardMime>>>,
+    generation: u64,
+    owned: bool,
     primary_contents: Option<ClipboardItem>,
 
     // External clipboard
@@ -143,6 +151,9 @@ impl Clipboard {
             self_mime: format!("pid/{}", std::process::id()),
 
             contents: None,
+            mime_contents: None,
+            generation: 0,
+            owned: false,
             primary_contents: None,
 
             cached_read: None,
@@ -154,6 +165,9 @@ impl Clipboard {
 
     pub fn set(&mut self, item: ClipboardItem) {
         self.contents = Some(item);
+        self.mime_contents = None;
+        self.owned = true;
+        self.generation = self.generation.wrapping_add(1);
     }
 
     pub fn set_primary(&mut self, item: ClipboardItem) {
@@ -162,7 +176,11 @@ impl Clipboard {
 
     pub fn set_offer(&mut self, data_offer: Option<DataOffer<WlDataOffer>>) {
         self.cached_read = None;
+        self.owned = data_offer
+            .as_ref()
+            .is_some_and(|offer| offer.has_mime_type(&self.self_mime));
         self.current_offer = data_offer;
+        self.generation = self.generation.wrapping_add(1);
     }
 
     pub fn set_primary_offer(&mut self, data_offer: Option<DataOffer<ZwpPrimarySelectionOfferV1>>) {
@@ -191,6 +209,9 @@ impl Clipboard {
     }
 
     pub fn read(&mut self) -> Option<ClipboardItem> {
+        if self.owned {
+            return self.contents.clone();
+        }
         let offer = self.current_offer.as_ref()?;
         if let Some(cached) = self.cached_read.clone() {
             return Some(cached);

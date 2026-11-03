@@ -1,5 +1,4 @@
 // Modified by Longbridge for gpui-fast.
-use wayland_protocols::xdg::foreign::zv2::client::{zxdg_importer_v2, zxdg_imported_v2};
 use std::{
     cell::{RefCell, RefMut},
     hash::Hash,
@@ -11,6 +10,7 @@ use std::{
     rc::{Rc, Weak},
     time::{Duration, Instant},
 };
+use wayland_protocols::xdg::foreign::zv2::client::{zxdg_imported_v2, zxdg_importer_v2};
 
 use anyhow::Context as _;
 use ashpd::WindowIdentifier;
@@ -519,9 +519,10 @@ where
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum DataSourceKind {
     Clipboard,
+    MimeClipboard(std::sync::Arc<Vec<gpui::ClipboardMime>>),
     Drag,
 }
 
@@ -1467,6 +1468,59 @@ impl WaylandConnection {
             data_source.offer(state.clipboard.self_mime());
             primary_selection.set_selection(Some(&data_source), serial.as_raw());
         }
+    }
+
+    pub(crate) fn read_clipboard_mime(
+        &self,
+        types: Vec<String>,
+        limit: usize,
+    ) -> gpui::Task<Result<Option<gpui::ClipboardMimeOffer>, gpui::ClipboardAccessError>> {
+        let state = self.0.borrow();
+        if state.keyboard_focused_window.is_none() {
+            return gpui::Task::ready(Err(gpui::ClipboardAccessError::NotFocused));
+        }
+        let executor = state.common.borrow().background_executor.clone();
+        state.clipboard.read_mime(types, limit, &executor)
+    }
+
+    pub(crate) fn write_clipboard_mime(
+        &self,
+        entries: Vec<gpui::ClipboardMime>,
+        expected: Option<u64>,
+    ) -> Result<(), gpui::ClipboardAccessError> {
+        use gpui::ClipboardAccessError;
+        let mut state = self.0.borrow_mut();
+        let (Some(manager), Some(device)) = (
+            state.globals.data_device_manager.clone(),
+            state.data_device.clone(),
+        ) else {
+            return Err(ClipboardAccessError::Unavailable);
+        };
+        if state.keyboard_focused_window.is_none() {
+            return Err(ClipboardAccessError::NotFocused);
+        }
+        let serial = state
+            .serial_tracker
+            .selection_serial()
+            .ok_or(ClipboardAccessError::NotFocused)?;
+        state.clipboard.check_offer(expected)?;
+        if entries.is_empty() {
+            device.set_selection(None, serial.as_raw());
+            state.clipboard.clear_mime();
+        } else {
+            let entries = std::sync::Arc::new(entries);
+            let source = manager.create_data_source(
+                &state.globals.qh,
+                DataSourceKind::MimeClipboard(entries.clone()),
+            );
+            for entry in entries.iter() {
+                source.offer(entry.mime_type.clone());
+            }
+            source.offer(state.clipboard.self_mime());
+            device.set_selection(Some(&source), serial.as_raw());
+            state.clipboard.set_mime(entries);
+        }
+        Ok(())
     }
 
     pub(crate) fn write_to_clipboard(&self, item: gpui::ClipboardItem) {
@@ -3095,6 +3149,17 @@ impl Dispatch<wl_data_source::WlDataSource, DataSourceKind> for WaylandClientSta
         let mut state = client.borrow_mut();
 
         match (kind, event) {
+            (
+                DataSourceKind::MimeClipboard(entries),
+                wl_data_source::Event::Send { mime_type, fd },
+            ) => {
+                if let Some(entry) = entries.iter().find(|entry| entry.mime_type == mime_type) {
+                    state.clipboard.send_bytes(fd, entry.bytes.clone());
+                }
+            }
+            (DataSourceKind::MimeClipboard(_), wl_data_source::Event::Cancelled) => {
+                data_source.destroy();
+            }
             (DataSourceKind::Clipboard, wl_data_source::Event::Send { mime_type, fd }) => {
                 state.clipboard.send(mime_type, fd);
             }
@@ -3532,7 +3597,14 @@ mod tests {
 // Imported parents can disappear independently of this client.
 delegate_noop!(WaylandClientStatePtr: ignore zxdg_importer_v2::ZxdgImporterV2);
 impl Dispatch<zxdg_imported_v2::ZxdgImportedV2, ()> for WaylandClientStatePtr {
-    fn event(_state: &mut Self, _proxy: &zxdg_imported_v2::ZxdgImportedV2, event: zxdg_imported_v2::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
+    fn event(
+        _state: &mut Self,
+        _proxy: &zxdg_imported_v2::ZxdgImportedV2,
+        event: zxdg_imported_v2::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
         if matches!(event, zxdg_imported_v2::Event::Destroyed) {
             log::warn!("external parent window is no longer available");
         }

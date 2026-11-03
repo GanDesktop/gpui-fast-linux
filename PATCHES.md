@@ -12,3 +12,14 @@ remain inside GPUI. No rendering or layout optimization is changed.
 
 Apply the `gpui-fast` and `gpui-fast-linux` overrides together and enable
 `gpui-kit/gpui-fast`. The original package names and version are preserved.
+
+## Standard Wayland clipboard MIME transport
+
+Implements explicit clipboard MIME reads/writes through the window connection's
+`wl_data_device`, `wl_data_source` and `wl_data_offer`. It uses the focused seat
+and its input serial, without requiring data-control extensions. Reads capture
+one offer, run bounded pipe I/O on the background executor, and return its revision
+for conditional cleanup. Outgoing data belongs to its source, including when a
+new selection replaces it while a transfer is still in progress.
+
+Protocol: https://wayland.freedesktop.org/docs/html/apa.html#protocol-spec-wl_data_device

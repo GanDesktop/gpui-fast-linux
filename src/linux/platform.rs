@@ -1161,6 +1161,28 @@ impl Platform for LinuxPlatform {
         self.connection.borrow().write_to_primary(item)
     }
 
+    fn supports_clipboard_mime(&self) -> bool {
+        self.connection.borrow().supports_clipboard_mime()
+    }
+
+    fn read_clipboard_mime(
+        &self,
+        types: Vec<String>,
+        limit: usize,
+    ) -> gpui::Task<Result<Option<gpui::ClipboardMimeOffer>, gpui::ClipboardAccessError>> {
+        self.connection.borrow().read_clipboard_mime(types, limit)
+    }
+
+    fn write_clipboard_mime(
+        &self,
+        entries: Vec<gpui::ClipboardMime>,
+        expected: Option<u64>,
+    ) -> Result<(), gpui::ClipboardAccessError> {
+        self.connection
+            .borrow()
+            .write_clipboard_mime(entries, expected)
+    }
+
     fn write_to_clipboard(&self, item: ClipboardItem) {
         self.connection.borrow().write_to_clipboard(item)
     }

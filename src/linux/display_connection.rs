@@ -178,6 +178,38 @@ impl DisplayConnection {
         dispatch!(self, connection => connection.write_to_primary(item), headless => ())
     }
 
+    pub(crate) fn supports_clipboard_mime(&self) -> bool {
+        match self {
+            #[cfg(feature = "wayland")]
+            Self::Wayland(_) => true,
+            _ => false,
+        }
+    }
+
+    pub(crate) fn read_clipboard_mime(
+        &self,
+        types: Vec<String>,
+        limit: usize,
+    ) -> gpui::Task<Result<Option<gpui::ClipboardMimeOffer>, gpui::ClipboardAccessError>> {
+        match self {
+            #[cfg(feature = "wayland")]
+            Self::Wayland(connection) => connection.read_clipboard_mime(types, limit),
+            _ => gpui::Task::ready(Err(gpui::ClipboardAccessError::Unavailable)),
+        }
+    }
+
+    pub(crate) fn write_clipboard_mime(
+        &self,
+        entries: Vec<gpui::ClipboardMime>,
+        expected: Option<u64>,
+    ) -> Result<(), gpui::ClipboardAccessError> {
+        match self {
+            #[cfg(feature = "wayland")]
+            Self::Wayland(connection) => connection.write_clipboard_mime(entries, expected),
+            _ => Err(gpui::ClipboardAccessError::Unavailable),
+        }
+    }
+
     pub(crate) fn write_to_clipboard(&self, item: ClipboardItem) {
         dispatch!(self, connection => connection.write_to_clipboard(item), headless => ())
     }
