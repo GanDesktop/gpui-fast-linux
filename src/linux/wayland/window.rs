@@ -785,8 +785,6 @@ pub enum ImeInput {
 
 impl Drop for WaylandWindow {
     fn drop(&mut self) {
-        if let Some(imported) = self.borrow_mut().external_parent.take() { imported.destroy(); }
-
         self.0.frame_loop.set(FrameLoop::Parked);
 
         let mut state = self.0.state.borrow_mut();
@@ -820,6 +818,13 @@ impl Drop for WaylandWindow {
         // Surface state might contain xdg_toplevel/xdg_surface which can be destroyed now that
         // decorations are gone. layer_surface has no dependencies.
         state.surface_state.destroy();
+
+        // Keep the external parent attached through dialog/toplevel destruction.
+        // Destroying the import first invalidates the relationship, so KWin's
+        // dialog-parent effect cannot find the parent to remove its dimming.
+        if let Some(imported) = state.external_parent.take() {
+            imported.destroy();
+        }
 
         // Viewport must be destroyed before the wl_surface.
         // See https://wayland.app/protocols/viewporter#wp_viewport
